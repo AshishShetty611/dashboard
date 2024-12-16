@@ -1,0 +1,327 @@
+import dash
+from dash import dcc, html
+import plotly.graph_objects as go
+import pyodbc
+import dash_bootstrap_components as dbc
+from dash.dependencies import Input, Output
+import pyodbc
+
+# Initialize the Dash app
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+
+# Server names and service types
+server_names = ["Cloud", "Kotak", "HDFC-2", "HDFC-100", "MOTILAL-OSWAL", "NJ INDIA", "SBICAP-SEC", "ICICI-2", "ICICI-4", "ICICI-6", "ICICI-10"]
+service_types = ["ISIN", "Master", "Receiver"]
+
+# Direct IP address mapping for servers
+server_to_host = {
+    "Cloud": "10.150.10.35",
+    "Kotak": "195.1.19.2",
+    "HDFC-2": "195.1.31.2,1435",
+    "HDFC-100": "195.1.31.100,1435",
+    "MOTILAL-OSWAL": "195.2.20.2",
+    "NJ INDIA": "195.3.177.2",
+    "SBICAP-SEC": "195.3.124.2",
+    "ICICI-2": "195.1.43.2,1500",
+    "ICICI-4": "195.1.43.4,1500",
+    "ICICI-6": "195.1.43.6,1500",
+    "ICICI-10": "195.1.43.10,1500",
+}
+
+# Define the DSN (Data Source Name) or direct connection string
+dsn = 'Prod_DM'  # Replace with your ODBC DSN or a direct connection string
+user = 'DML1'  # Oracle username
+password = 'nsdl456#'  # Oracle password
+
+# Create a connection using pyodbc
+connection = pyodbc.connect(f'DSN={dsn};UID={user};PWD={password}')
+cursor = connection.cursor()
+
+
+def fetch_receiver_pending_data():
+    connection = get_oracle_connection()
+    cursor = connection.cursor()
+
+    query = """
+
+
+SELECT 
+    BMT_BP_ID,
+    COUNT(1) AS Total_Count
+FROM (
+    SELECT 
+        CASE 
+            WHEN BMT_BP_ID IN ('IN300214') THEN 'Kotak'  
+            WHEN BMT_BP_ID IN ('IN300476', 'IN301151', 'IN301436') THEN 'HDFC-100' 
+            WHEN BMT_BP_ID IN ('IN300126', 'IN300601', 'IN301549') THEN 'HDFC-2' 
+            WHEN BMT_BP_ID IN ('IN301565', 'IN301740', 'IN301838', 'IN301862', 'IN302978', 'IN303001') THEN 'MOTILAL-OSWAL' 
+            WHEN BMT_BP_ID IN ('IN304262') THEN 'NJ INDIA' 
+            WHEN BMT_BP_ID IN ('IN300351', 'IN300765', 'IN301047', 'IN301119', 'IN301217', 'IN301284', 'IN301305', 'IN301397', 'IN301444', 'IN302531', 'IN302759', 'IN303124', 'IN306114') THEN 'SBICAP-SEC' 
+            WHEN BMT_BP_ID IN ('IN300183') THEN 'ICICI-2' 
+            WHEN BMT_BP_ID IN ('IN302679') THEN 'ICICI-4' 
+            WHEN BMT_BP_ID IN ('IN302902') THEN 'ICICI-6' 
+            WHEN BMT_BP_ID IN ('IN301348') THEN 'ICICI-10'      
+            ELSE '0' 
+        END AS BMT_BP_ID
+    FROM DM.BP_MSTR_TBL 
+    WHERE BMT_BP_ID IN (
+        'IN300214', 'IN300476', 'IN301151', 'IN301436', 'IN300126', 'IN300601', 
+        'IN301549', 'IN301565', 'IN301740', 'IN301838', 'IN301862', 'IN302978', 
+        'IN303001', 'IN304262', 'IN300351', 'IN300765', 'IN301047', 'IN301119', 
+        'IN301217', 'IN301284', 'IN301305', 'IN301397', 'IN301444', 'IN302531', 
+        'IN302759', 'IN303124', 'IN306114', 'IN300183', 'IN302679', 'IN302902', 
+        'IN301348'
+    )
+)
+GROUP BY BMT_BP_ID
+ORDER BY Total_Count DESC;
+    """
+
+    cursor.execute(query)
+    results = cursor.fetchall()
+
+    # Format results as a dictionary
+    pending_data = {}
+    for row in results:
+        server_name = row[0]
+        total_count = row[1]
+        pending_data[server_name] = total_count
+
+    connection.close()
+    return pending_data
+
+
+
+# Function to connect to the database
+def get_db_connection(server_name):
+    host = server_to_host.get(server_name)
+    if not host:
+        raise ValueError(f"Could not resolve host for {server_name}")
+
+    if "," in host:  # Servers with ports
+        host, port = host.split(",")
+        connection_string = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={host},{port};DATABASE=nsdldpm;UID=nsdlusr;PWD=nsdlusr'
+    else:
+        connection_string = f'DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={host};DATABASE=nsdldpm;UID=nsdlusr;PWD=nsdlusr'
+
+    connection = pyodbc.connect(connection_string)
+    return connection
+
+
+# Function to check error status and pending counts for each server
+def check_error_status(server_name):
+    try:
+        connection = get_db_connection(server_name)
+        cursor = connection.cursor()
+
+        # ISIN Processor
+        cursor.execute("SELECT bst_err_desc FROM batch_seq_tbl (NOLOCK) WHERE bst_err_desc IS NOT NULL")
+        isin_error = cursor.fetchone()
+
+        cursor.execute("SELECT COUNT(1) FROM in_cmng_tbl (NOLOCK) WHERE ict_proc_ind = 'N'")
+        result = cursor.fetchone()
+        isin_pending = result[0] if result else 0
+
+        # Master Processor
+        cursor.execute("SELECT mst_err_desc FROM Mstrbatch_seq_tbl (NOLOCK) WHERE mst_err_desc IS NOT NULL")
+        master_error = cursor.fetchone()
+
+        cursor.execute(
+            "SELECT COUNT(1) FROM mstrin_cmng_tbl (NOLOCK) WHERE mct_srnum > (SELECT MST_Lst_Proc_SrNum FROM mstrbatch_seq_tbl (NOLOCK))")
+        result = cursor.fetchone()
+        master_pending = result[0] if result else 0
+
+        connection.close()
+
+        return {
+            "ISIN_error": 1 if isin_error else 0,
+            "ISIN_pending": isin_pending,
+            "Master_error": 1 if master_error else 0,
+            "Master_pending": master_pending
+        }
+    except Exception as e:
+        print(f"Error checking status for {server_name}: {e}")
+        return {
+            "ISIN_error": 1,
+            "ISIN_pending": 0,
+            "Master_error": 1,
+            "Master_pending": 0
+        }
+
+
+
+def update_receiver_donut_chart(pending_data):
+    for server_name, pending_count in pending_data.items():
+        # Update the Receiver donut chart with the pending count
+        update_donut_chart(server_name, pending_count)
+
+def update_donut_chart(server_name, pending_count):
+    # Assume you have a function to update the chart based on server_name and pending_count
+    figure = generate_donut_chart(pending_count)
+    # Display or update the chart for the specific server
+    # You can use Dash or any other framework to display the donut chart dynamically
+    return figure
+
+# Function to generate a donut chart
+def generate_donut_chart(pending_count, error_status):
+    color = "#FF0000" if error_status else "#FFFF00" if pending_count > 0 else "#4c9a8c"
+    figure = go.Figure(
+        data=[go.Pie(
+            labels=['Pending', 'Remaining'],
+            values=[pending_count, 100 - pending_count],
+            hole=0.7,
+            marker=dict(colors=[color, "#1f2c34"]),
+            textinfo='none',
+        )]
+    )
+    figure.update_layout(
+        annotations=[dict(
+            text=f'<b>{pending_count}</b>',
+            x=0.5, y=0.5,
+            font_size=20,
+            font_color='cyan',
+            showarrow=False
+        )],
+        showlegend=False,
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=0, r=0, t=0, b=0),
+    )
+    return figure
+
+    
+app.layout = html.Div([
+    dcc.Store(id='server-data-store', data={}),
+
+    # Add Monitoring Dashboard Header
+    dbc.Row([
+        dbc.Col(
+            html.H2("Monitoring Dashboard", style={
+                'color': 'cyan',
+                'text-align': 'center',
+                'padding': '10px',
+                'font-size': '28px'
+            }),
+            width=12
+        )
+    ], style={
+        'background-color': '#1f2c34',
+        'margin-bottom': '10px'
+    }),
+
+    # Row for server names
+    dbc.Row([
+        dbc.Col(html.Div("Server Names", style={
+            'color': 'cyan',
+            'font-size': '16px',
+            'text-align': 'center',
+            'padding': '5px'
+        }), width=1),  # Placeholder for service column
+        *[dbc.Col(html.Div(server, style={
+            'color': 'cyan',
+            'font-size': '14px',
+            'text-align': 'center',
+            'padding': '5px'
+        }), width=1) for server in server_names]
+    ], style={
+        'background-color': '#1f2c34',
+        'padding': '5px'
+    }),
+
+    # Rows for each service type and donuts
+    *[
+        dbc.Row([
+            dbc.Col(html.Div(service, style={
+                'color': 'cyan',
+                'font-size': '16px',
+                'text-align': 'center',
+                'padding': '5px'
+            }), width=1),
+            *[dbc.Col(
+                dcc.Graph(
+                    id=f"donut-{service}-{server}",
+                    config={"displayModeBar": False},
+                    style={'height': '150px', 'width': '150px'}
+                ),
+                width=1,
+                style={'padding': '5px'}
+            ) for server in server_names]
+        ], style={
+            'background-color': '#1f2c34',
+            'padding': '5px'
+        })
+        for service in service_types
+    ],
+
+    # Timer display
+    html.Div(
+        id='timer-display',
+        style={
+            'text-align': 'center',
+            'color': 'cyan',
+            'font-size': '20px',
+            'padding': '10px',
+            'margin-top': '10px',
+            'background-color': '#1f2c34',
+            'width': '100%'
+        }
+    ),
+
+    # Auto-refresh and countdown intervals
+    dcc.Interval(id="auto-refresh", interval=30000, n_intervals=0),
+    dcc.Interval(id="countdown-timer", interval=1000, n_intervals=0)
+], style={
+    'background-color': '#1f2c34',
+    'height': '100vh',
+    'width': '100%',
+    'overflow': 'auto'
+})
+
+
+# Callbacks
+@app.callback(
+    [Output(f"donut-{service}-{server}", "figure") for service in service_types for server in server_names],
+    Input("server-data-store", "data")
+)
+def update_dashboard(server_data):
+    return [
+        generate_donut_chart(
+            server_data.get(server, {}).get(f"{service}_pending", 0),
+            server_data.get(server, {}).get(f"{service}_error", 0)
+        ) for service in service_types for server in server_names
+    ]
+
+@app.callback(
+    [Output(f"donut-Receiver-{server_name}", "figure") for server_name in server_names],
+    Input("server-data-store", "data")
+)
+def update_receiver_dashboard(server_data):
+    pending_data = fetch_receiver_pending_data()
+    return [
+        generate_donut_chart(pending_data.get(server_name, 0)) for server_name in server_names
+    ]
+
+@app.callback(
+    Output('timer-display', 'children'),
+    Input('countdown-timer', 'n_intervals')
+)
+def update_timer(n_intervals):
+    total_interval = 30
+    seconds_left = total_interval - (n_intervals % total_interval)
+    return f"Refresh in {seconds_left} seconds"
+
+
+@app.callback(
+    Output('server-data-store', 'data'),
+    Input('auto-refresh', 'n_intervals')
+)
+def fetch_server_data(n_intervals):
+    server_data = {}
+    for server in server_names:
+        server_data[server] = check_error_status(server)
+    return server_data
+
+
+# Run the app
+if __name__ == '__main__':
+    app.run_server(debug=True)
