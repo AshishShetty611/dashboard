@@ -5,7 +5,9 @@ import pyodbc
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output
 import pyodbc
-
+from dash import Dash, Input, Output, dcc
+from dash import html
+import plotly.graph_objs as go
 # Initialize the Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
@@ -149,7 +151,7 @@ def check_error_status(server_name):
         }
 
 
-
+'''
 def update_receiver_donut_chart(pending_data):
     for server_name, pending_count in pending_data.items():
         # Update the Receiver donut chart with the pending count
@@ -161,9 +163,8 @@ def update_donut_chart(server_name, pending_count):
     # Display or update the chart for the specific server
     # You can use Dash or any other framework to display the donut chart dynamically
     return figure
-
-# Function to generate a donut chart
-def generate_donut_chart(pending_count, error_status):
+'''
+def generate_donut_chart(pending_count, error_status=0):
     color = "#FF0000" if error_status else "#FFFF00" if pending_count > 0 else "#4c9a8c"
     figure = go.Figure(
         data=[go.Pie(
@@ -189,7 +190,7 @@ def generate_donut_chart(pending_count, error_status):
     )
     return figure
 
-    
+# Layout of the app
 app.layout = html.Div([
     dcc.Store(id='server-data-store', data={}),
 
@@ -266,24 +267,19 @@ app.layout = html.Div([
             'width': '100%'
         }
     ),
-
     # Auto-refresh and countdown intervals
     dcc.Interval(id="auto-refresh", interval=30000, n_intervals=0),
-    dcc.Interval(id="countdown-timer", interval=1000, n_intervals=0)
-], style={
-    'background-color': '#1f2c34',
-    'height': '100vh',
-    'width': '100%',
-    'overflow': 'auto'
-})
+    dcc.Interval(id="countdown-timer", interval=1000, n_intervals=0),
+    dcc.Interval(id="receiver-refresh", interval=30000, n_intervals=0),  # 30 seconds interval for receiver
+])
 
-
-# Callbacks
+# Callbacks for updating the dashboard (services only)
 @app.callback(
     [Output(f"donut-{service}-{server}", "figure") for service in service_types for server in server_names],
     Input("server-data-store", "data")
 )
 def update_dashboard(server_data):
+    # Update donut charts for services only (not the Receiver)
     return [
         generate_donut_chart(
             server_data.get(server, {}).get(f"{service}_pending", 0),
@@ -291,16 +287,30 @@ def update_dashboard(server_data):
         ) for service in service_types for server in server_names
     ]
 
-@app.callback(
-    [Output(f"donut-Receiver-{server_name}", "figure") for server_name in server_names],
-    Input("server-data-store", "data")
-)
-def update_receiver_dashboard(server_data):
-    pending_data = fetch_receiver_pending_data()
-    return [
-        generate_donut_chart(pending_data.get(server_name, 0)) for server_name in server_names
-    ]
+app.layout.children.append(dcc.Store(id='receiver-data-store', data={}))
 
+# Receiver Dashboard Update (Triggered every 30 seconds)
+@app.callback(
+    Output('receiver-data-store', 'data'),
+    Input("receiver-refresh", "n_intervals"),  # Trigger every 30 seconds
+)
+def fetch_receiver_data(n_intervals):
+    # Fetch receiver pending data
+    pending_data = fetch_receiver_pending_data()
+    return pending_data
+
+# Updated Receiver Dashboard Callback
+@app.callback(
+    [Output(f"donut-Receiver-{server}", "figure") for server in server_names],
+    Input('receiver-data-store', 'data')
+)
+def update_receiver_dashboard(pending_data):
+    # Generate the figures for each server using the cached data
+    return [
+        generate_donut_chart(pending_data.get(server, 0))
+        for server in server_names
+    ]
+# Countdown Timer Update (Triggered every second)
 @app.callback(
     Output('timer-display', 'children'),
     Input('countdown-timer', 'n_intervals')
@@ -310,7 +320,7 @@ def update_timer(n_intervals):
     seconds_left = total_interval - (n_intervals % total_interval)
     return f"Refresh in {seconds_left} seconds"
 
-
+# Fetch Server Data (Triggered every 30 seconds)
 @app.callback(
     Output('server-data-store', 'data'),
     Input('auto-refresh', 'n_intervals')
@@ -320,7 +330,6 @@ def fetch_server_data(n_intervals):
     for server in server_names:
         server_data[server] = check_error_status(server)
     return server_data
-
 
 # Run the app
 if __name__ == '__main__':
