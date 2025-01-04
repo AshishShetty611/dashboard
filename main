@@ -8,6 +8,7 @@ import pyodbc
 from dash import Dash, Input, Output, dcc
 from dash import html
 import plotly.graph_objs as go
+import time
 # Initialize the Dash app
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
@@ -273,64 +274,92 @@ app.layout = html.Div([
     dcc.Interval(id="receiver-refresh", interval=30000, n_intervals=0),  # 30 seconds interval for receiver
 ])
 
-# Callbacks for updating the dashboard (services only)
-@app.callback(
-    [Output(f"donut-{service}-{server}", "figure") for service in service_types for server in server_names],
-    Input("server-data-store", "data")
-)
-def update_dashboard(server_data):
-    # Update donut charts for services only (not the Receiver)
-    return [
-        generate_donut_chart(
-            server_data.get(server, {}).get(f"{service}_pending", 0),
-            server_data.get(server, {}).get(f"{service}_error", 0)
-        ) for service in service_types for server in server_names
-    ]
 
-app.layout.children.append(dcc.Store(id='receiver-data-store', data={}))
-
-# Receiver Dashboard Update (Triggered every 30 seconds)
+# Callback for updating all donut charts (Services + Receiver)
 @app.callback(
-    Output('receiver-data-store', 'data'),
-    Input("receiver-refresh", "n_intervals"),  # Trigger every 30 seconds
+    [
+        Output(f"donut-{service}-{server}", "figure")
+        for service in service_types + ["Receiver"] for server in server_names
+    ],
+    [Input("server-data-store", "data"), Input("receiver-data-store", "data")]
 )
-def fetch_receiver_data(n_intervals):
-    # Fetch receiver pending data
-    pending_data = fetch_receiver_pending_data()
-    return pending_data
+def update_all_charts(server_data, receiver_data):
+    figures = []
+    # Generate figures for ISIN and Master services
+    for service in service_types:
+        for server in server_names:
+            pending = server_data.get(server, {}).get(f"{service}_pending", 0)
+            errors = server_data.get(server, {}).get(f"{service}_error", 0)
+            figures.append(generate_donut_chart(pending, errors))
 
-# Updated Receiver Dashboard Callback
-@app.callback(
-    [Output(f"donut-Receiver-{server}", "figure") for server in server_names],
-    Input('receiver-data-store', 'data')
-)
-def update_receiver_dashboard(pending_data):
-    # Generate the figures for each server using the cached data
-    return [
-        generate_donut_chart(pending_data.get(server, 0))
-        for server in server_names
-    ]
-# Countdown Timer Update (Triggered every second)
+    # Generate figures for Receiver
+    for server in server_names:
+        pending = receiver_data.get(server, 0)
+        figures.append(generate_donut_chart(pending))
+
+    return figures
+
+
+# Timer display callback
 @app.callback(
     Output('timer-display', 'children'),
-    Input('countdown-timer', 'n_intervals')
+    Input('auto-refresh', 'n_intervals')
 )
 def update_timer(n_intervals):
     total_interval = 30
     seconds_left = total_interval - (n_intervals % total_interval)
     return f"Refresh in {seconds_left} seconds"
 
-# Fetch Server Data (Triggered every 30 seconds)
+
+# Fetch service data (every 30 seconds)
 @app.callback(
     Output('server-data-store', 'data'),
     Input('auto-refresh', 'n_intervals')
 )
-def fetch_server_data(n_intervals):
+def fetch_service_data(n_intervals):
     server_data = {}
     for server in server_names:
-        server_data[server] = check_error_status(server)
+        server_data[server] = check_error_status(server)  # Replace with actual data fetching logic
     return server_data
 
+
+# Fetch Receiver data (every 30 seconds)
+@app.callback(
+    Output('receiver-data-store', 'data'),
+    Input('receiver-refresh', 'n_intervals')
+)
+def fetch_receiver_data(n_intervals):
+    receiver_data = {}
+    for server in server_names:
+        receiver_data[server] = get_receiver_pending_count(server)  # Replace with actual logic
+    return receiver_data
+
+
+# Utility function for generating donut charts
+def generate_donut_chart(pending, errors=0):
+    return {
+        "data": [
+            {"values": [pending, errors], "labels": ["Pending", "Errors"], "type": "pie"}
+        ],
+        "layout": {"title": "Donut Chart"}
+    }
+
+
+# Dummy function to simulate fetching service data
+def check_error_status(server):
+    return {
+        "ISIN_pending": 5,
+        "ISIN_error": 1,
+        "Master_pending": 3,
+        "Master_error": 0
+    }
+
+
+# Dummy function to simulate fetching receiver pending data
+def get_receiver_pending_count(server):
+    return 10
+
+
 # Run the app
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run_server(debug=True)
